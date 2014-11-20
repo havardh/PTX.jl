@@ -5,5 +5,5 @@ INCLUDE=-I${LLVM_HOME}/include
 
 
 all: main.cpp
-	clang++ -g -rdynamic main.cpp lower-array-pass.cpp `llvm-config --cxxflags --libs all` `llvm-config --ldflags` -o main
+	clang++ -rdynamic main.cpp linker.cpp lower-array-pass.cpp `llvm-config --cxxflags --libs all` `llvm-config --ldflags` -o julia2ptx
 

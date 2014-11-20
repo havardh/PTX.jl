@@ -1,5 +1,8 @@
 import CUDA
 
+base="/home/havard/projects/PTX.jl/"
+julia2ptx="julia2ptx"
+
 
 function create()
   dev = CUDA.CuDevice(0)
@@ -20,19 +23,18 @@ end
 @noinline setindex!{T}(A::GPUArray{T}, x, i) = A[i] = x
 
 function code_ptx(code)
-
   run(`mkdir -p .ptx`)
   f = open(".ptx/kernel.ll", "w")
   write(f, code)
   close(f)
 
-  run(`llvm-as .ptx/kernel.ll`)
+  #run(`llvm-as .ptx/kernel.ll`)
   #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
 
-  run(`llc -O3 -mcpu=sm_20 .ptx/kernel.bc -o .ptx/kernel.ptx`)
+  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
 
   # Hack to remove .weak declaration from get_global_id
-  ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
+  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
 
   return ptx
 
@@ -43,8 +45,7 @@ function code_spir(code)
   f = open(".spir/kernel.ll", "w")
   write(f, code)
   close(f)
-
-  readall(`./main .spir/kernel.ll` .> `cat`)
+  readall(`$base$julia2ptx .spir/kernel.ll` .> `cat`)
 end
 
 macro code_ptx(ex0)
@@ -65,7 +66,7 @@ macro code_module(ex)
     close(outRead)
     redirect_stdout(originalSTDOUT)
 
-    makeModule(fn)
+    unmangle(makeModule(fn))
   end
 
 end
@@ -149,4 +150,23 @@ function stripDebugging(fn)
 
   end
   lines
+end
+
+function unmangle(fn)
+
+  lines = ""
+
+  for line in split(fn, "\n")
+
+    m = match(r"(.*?)\"julia_(.*?)!?;.*?(\(.*)", line)
+    if m == nothing
+      lines = "$lines$line\n"
+    else
+      stripped = m.captures[1]*m.captures[2]*m.captures[3]
+      lines = "$lines$stripped\n"
+    end   
+
+  end
+  lines
+
 end

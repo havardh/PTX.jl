@@ -17,9 +17,9 @@
 #include "llvm/Linker.h"
 #include "llvm/IR/Constants.h"
 
-namespace llvm {
+#include "linker.h"
 
-Pass* createLowerJuliaArrayFunctionPass();
+namespace llvm {
   
 bool is_jl_array_type(Type* type) {
   if (type->isPointerTy()) {
@@ -33,23 +33,6 @@ bool is_jl_array_type(Type* type) {
   return false;
 }
 
-
-  
-StringRef unmangleName(StringRef name) {
-
-  StringRef mangledName = name.drop_front(6);
-
-  SmallVector<StringRef, 3> Matches;
-  Regex regex("([A-Za-z_+]*)");
-  
-  if (regex.match(mangledName, &Matches)) {
-    return Matches[0];
-  } else {
-    return mangledName;
-  }
-  
-}
-
 struct LowerJuliaArrayPass : public ModulePass {
 
   static char ID;
@@ -57,25 +40,23 @@ struct LowerJuliaArrayPass : public ModulePass {
 
   virtual bool runOnModule(Module &M) {
     
-    FunctionPassManager fpm(&M);
-    fpm.add(createLowerJuliaArrayFunctionPass());
-    
     std::vector<Function*> Fs = functions(M);
     
     linkLibrary(M);
 
     for (std::vector<Function*>::iterator I = Fs.begin(), E = Fs.end(); I != E; ++I) {
-      
+
       Function *OldFunc = (*I);
 
       Function *NewFunc = copyFunctionWithLoweredJuliaArrayArguments(M, OldFunc);
-        
+      //OldFunc->replaceAllUsesWith(NewFunc);
       OldFunc->eraseFromParent();
       
-      generateFunctionMetadata(M, NewFunc);
-    
-      fpm.run(*NewFunc);
+      //if (!NewFunc->isDeclaration()) {
+        generateFunctionMetadata(M, NewFunc);
+      //}
     }
+    
     return false;
   }
 
@@ -84,8 +65,9 @@ struct LowerJuliaArrayPass : public ModulePass {
 
     for (Module::iterator F = M.begin(); F != M.end(); ++F) {
 
-      F->setName(unmangleName(F->getName()));
-      functions.push_back(F);
+      if (!F->isDeclaration()) {
+        functions.push_back(F);
+      }
     }
     
     return functions;
@@ -130,22 +112,12 @@ struct LowerJuliaArrayPass : public ModulePass {
   void linkLibrary(Module &M) {
     
     SMDiagnostic error;
-    Module* LowLevelJuliaArray = ParseIRFile("lowered-julia-array.bc", error, M.getContext());
-    Module* OpenCLPTXLibrary = ParseIRFile("nvptx64-nvidia-cuda.bc", error, M.getContext());
+    Module* LowLevelJuliaArray = ParseIRFile("/home/havard/projects/PTX.jl/lowered-julia-array.bc", error, M.getContext());
+    Module* OpenCLPTXLibrary = ParseIRFile("/home/havard/projects/PTX.jl/nvptx64-nvidia-cuda.bc", error, M.getContext());
+
+    link(&M, LowLevelJuliaArray);
+    link(&M, OpenCLPTXLibrary);
     
-    /*SmallVector<Type*, 1> args;
-    args.push_back(Type::getInt32Ty(Library->getContext()));
-
-    Library->getOrInsertFunction(
-      "get_global_id",
-      FunctionType::get(Type::getInt64Ty(Library->getContext()), args, false)
-    );
-
-    Library->getFunction("get_global_id")->setLinkage(Function::ExternalLinkage);*/
-
-    Linker::LinkModules(&M, LowLevelJuliaArray, 0, 0);
-    Linker::LinkModules(&M, OpenCLPTXLibrary, 0, 0);
-
   }
 
   Function* copyFunctionWithLoweredJuliaArrayArguments(Module &M, Function *OldFunc) {
@@ -215,72 +187,4 @@ Pass* createLowerJuliaArrayPass() {
   return new LowerJuliaArrayPass();
 }
 
-struct LowerJuliaArrayFunctionPass : public FunctionPass {
-  
-  static char ID;
-  LowerJuliaArrayFunctionPass() : FunctionPass(ID) {}
-
-  virtual bool runOnFunction(Function &F) {
-    
-    std::vector<Instruction*> Is;
-    for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
-      Is.push_back(&*I);
-    }
-
-    for (std::vector<Instruction*>::iterator I = Is.begin(), E = Is.end(); I != E; ++I) {
-
-      if (CallInst* call = dyn_cast<CallInst>(*I)) {
-
-        StringRef name = unmangleName(call->getCalledFunction()->getName());
-        Function *function = F.getParent()->getFunction(name);
-
-        if (function) {
-
-          std::vector<Value*> args;
-          for(int i=0; i<call->getNumArgOperands(); i++) {
-            args.push_back(call->getArgOperand(i));
-          }
-
-          ArrayRef<Value*> Args(args);
-                   
-          CallInst *newCall = CallInst::Create(function, Args);
-
-          if (newCall->getType() != call->getType()) {
-            if (call->use_begin() != call->use_end()) {
-              errs() << "Cannot handle usage of non matching return types for " << *call->getType() << " and " << *newCall->getType() << "\n";
-            }
-            
-            newCall->insertBefore(call);
-            call->eraseFromParent();
-            
-          } else {
-            ReplaceInstWithInst(call, newCall);
-          }
-
-            
-        } else {
-          errs() << "Did not find function: " << name << "\n";
-        }
-      } else if (ReturnInst* ret = dyn_cast<ReturnInst>(*I)) {
-
-        ReplaceInstWithInst(ret, ReturnInst::Create(F.getContext()));
-        
-      }
-    }
-      
-        
-    return false;
-  }
-  
-};
-
-char LowerJuliaArrayFunctionPass::ID = 0;
-
-static RegisterPass<LowerJuliaArrayFunctionPass> Y("LowerJuliaArrayFunctionPass", "Lower Julia Array usage to c arrays", false, false);
-
-Pass* createLowerJuliaArrayFunctionPass() {
-  return new LowerJuliaArrayFunctionPass();
-}  
-  
 }
-  
