@@ -19,6 +19,7 @@ function MatrixMultiply(A, B, C, n, m, k)
 
   C[col + row*k] = v;
 
+  return
 end
 
 type Benchmark <: Proc end
@@ -29,11 +30,11 @@ Base.isvalid(p::Benchmark, n) = n > 0
 
 function Base.start(p::Benchmark, n)
   dev, ctx = create()
-  ptx = @code_ptx MatrixMultiply(
-    GPUArray{Int64}([0]),
-    GPUArray{Int64}([0]),
-    GPUArray{Int64}([0]),
-    0, 20, 0
+  ptx = code_ptx(MatrixMultiply, 
+    (GPUArray{Int64},
+    GPUArray{Int64},
+    GPUArray{Int64},
+    Int64, Int64, Int64)
   )
 
   md = CUDA.CuModule(source=ptx)

@@ -48,27 +48,24 @@ function code_spir(code)
   readall(`$base$julia2ptx .spir/kernel.ll` .> `cat`)
 end
 
-macro code_ptx(ex0)
-  :(code_ptx(code_spir(@code_module $ex0)))
+function code_module(fn, args)
+
+  originalSTDOUT = STDOUT
+  (outRead, outWrite) = redirect_stdout()
+
+  code_llvm(fn, args)
+
+  close(outWrite)
+  fn = readavailable(outRead)
+  close(outRead)
+  redirect_stdout(originalSTDOUT)
+
+  unmangle(makeModule(fn))
+
 end
 
-
-macro code_module(ex)
-
-  quote
-    originalSTDOUT = STDOUT
-    (outRead, outWrite) = redirect_stdout()
-
-    @code_llvm $ex
-
-    close(outWrite)
-    fn = readavailable(outRead)
-    close(outRead)
-    redirect_stdout(originalSTDOUT)
-
-    unmangle(makeModule(fn))
-  end
-
+function code_ptx(fn, args)
+  code_ptx(code_spir(code_module(fn, args)))
 end
 
 function makeModule(fn)

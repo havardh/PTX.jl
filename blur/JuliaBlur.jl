@@ -37,7 +37,7 @@ Base.isvalid(p::Benchmark, n) = n & (n-1) == 0
 function Base.start(p::Benchmark, n)
 
   dev, ctx = create()
-  ptx = @code_ptx blur(GPUArray{Int64}([1]), GPUArray{Int64}([1]))
+  ptx = code_ptx(blur, (GPUArray{Int64}, GPUArray{Int64}))
   
   md = CUDA.CuModule(source=ptx)
   kernel = CUDA.CuFunction(md, "blur")
