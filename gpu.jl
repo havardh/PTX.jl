@@ -22,7 +22,14 @@ end
 @noinline getindex{T}(A::GPUArray{T}, i::Int64) = 0
 @noinline setindex!{T}(A::GPUArray{T}, x, i) = A[i] = x
 
+llvm_type(::Type{Int32}) = "i32"
+llvm_type(::Type{Int64}) = "i64"
+llvm_type(::Type{Float32}) = "f32"
+llvm_type(::Type{Float64}) = "f64"
+llvm_type{T}(::Type{GPUArray{T}}) = llvm_type(T) * "*"
+
 function code_ptx(code)
+
   run(`mkdir -p .ptx`)
   f = open(".ptx/kernel.ll", "w")
   write(f, code)
@@ -60,7 +67,7 @@ function code_module(fn, args)
   close(outRead)
   redirect_stdout(originalSTDOUT)
 
-  unmangle(makeModule(fn))
+  unmangle(makeModule(fn, args))
 
 end
 
@@ -68,16 +75,15 @@ function code_ptx(fn, args)
   code_ptx(code_spir(code_module(fn, args)))
 end
 
-function makeModule(fn)
+function makeModule(fn, args)
 
   jl_value = "%jl_value_t = type { %jl_value_t* }"
 
   declares = makeDeclares(fn)
   fn = stripDebugging(fn)
-
-  "$jl_value
-   $fn
-   $declares"
+  metadata = makeMetadata(args)
+ 
+  "$jl_value\n$fn\n$declares\n\n$metadata"
 end
 
 function makeDeclares(fn)
@@ -96,6 +102,19 @@ function makeDeclares(fn)
   str_descs
 end
 
+function makeMetadata(args)
+
+  metadata = "!julia.args = !{!0}\n\n!0 = metadata !{"
+
+  delim = ""
+  for arg in args
+    metadata = metadata * delim * "metadata !\"" * llvm_type(arg) * "\""
+    delim = ", "
+  end
+
+  metadata * "}"
+
+end
 
 function removeValues(call)
 

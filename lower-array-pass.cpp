@@ -63,6 +63,34 @@ void replaceAllCallsWith(Function* OldFunc, Function* NewFunc) {
     }
   }
 }
+
+Type* extractType(LLVMContext& context, StringRef type) {
+  APInt Val;
+  errs() << type.substr(1,2) << "\n";
+  errs() << type.substr(1,2).getAsInteger(10, Val) << "\n";
+  if (!type.substr(1,2).getAsInteger(10, Val)) {
+
+    uint64_t bits = Val.getLimitedValue();
+    switch (type[0]) {
+    case 'i': {
+      return PointerType::get(IntegerType::get(context, bits), 1);
+    }
+    case 'f': {
+      if (bits == 32) {
+        return PointerType::get(Type::getFloatTy(context), 1);
+      } else {
+        return PointerType::get(Type::getDoubleTy(context), 1);
+      }
+    }
+    default:
+      errs() << "Not supported\n";
+      exit(1);
+    }
+    
+  }
+
+  return NULL;
+}
   
 struct LowerJuliaArrayPass : public ModulePass {
 
@@ -171,6 +199,12 @@ struct LowerJuliaArrayPass : public ModulePass {
 
   std::vector<Type*> lowerJuliaArrayArguments(Function *OldFunc) {
 
+    Module* M = OldFunc->getParent();
+    LLVMContext &context = M->getContext();
+    NamedMDNode* JuliaArgs = M->getOrInsertNamedMetadata("julia.args");
+    MDNode *node = JuliaArgs->getOperand(0);
+    
+    int operand = 0;
     std::vector<Type*> ArgTypes;
     for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
 
@@ -179,11 +213,30 @@ struct LowerJuliaArrayPass : public ModulePass {
       if (is_jl_array_type(argType)) {
         // Should figure out actual type from meta?
         // This is hardcoded i64*
-        ArgTypes.push_back(PointerType::get(IntegerType::get(OldFunc->getContext(), 64), 1));
+
+        Value *value = node->getOperand(operand);
+        if (MDString* mdstring = dyn_cast<MDString>(value)) {
+
+          if (Type* type = extractType(context, mdstring->getString())) {
+            ArgTypes.push_back(type);            
+          } else {
+            errs() << "Could not extract type: ";
+            mdstring->print(errs());
+            errs() << "\n";
+            exit(1);
+          }
+        } else {
+          errs() << "Could not extract type: ";
+          value->print(errs());
+          errs() << "\n";
+          exit(1);
+        }
+        
+        
       } else {
         ArgTypes.push_back(I->getType());
       }
-      
+      operand++;
     }
 
     return ArgTypes;
