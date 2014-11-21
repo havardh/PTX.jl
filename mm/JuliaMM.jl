@@ -37,7 +37,7 @@ function Base.start(p::Benchmark, n)
   )
 
   md = CUDA.CuModule(source=ptx)
-  mm = CUDA.CuFunction(md, "MatrixMultiply1")
+  mm = CUDA.CuFunction(md, "MatrixMultiply")
 
   A = GPUArray{Int64}(rand(Int64, n*n));
   B = GPUArray{Int64}(rand(Int64, n*n));

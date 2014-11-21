@@ -38,8 +38,9 @@ function Base.start(p::Benchmark, n)
 
   dev, ctx = create()
   ptx = @code_ptx blur(GPUArray{Int64}([1]), GPUArray{Int64}([1]))
+  
   md = CUDA.CuModule(source=ptx)
-  kernel = CUDA.CuFunction(md, "blur1")
+  kernel = CUDA.CuFunction(md, "blur")
 
   img = GPUArray{Int64}(rand(Int64, n*n))
 

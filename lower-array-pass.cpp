@@ -33,6 +33,37 @@ bool is_jl_array_type(Type* type) {
   return false;
 }
 
+
+  
+void replaceAllCallsWith(Function* OldFunc, Function* NewFunc) {
+  
+  for (Value::use_iterator I = OldFunc->use_begin(), E = OldFunc->use_end(); I != E; ++I) {
+
+    if (CallInst* call = dyn_cast<CallInst>(*I)) {
+    
+      std::vector<Value*> args;
+      for(int i=0; i<call->getNumArgOperands(); i++) {
+        args.push_back(call->getArgOperand(i));
+      }
+      ArrayRef<Value*> Args(args);
+  
+      CallInst *newCall = CallInst::Create(NewFunc, Args);
+      if (newCall->getType() != call->getType()) {
+        if (call->use_begin() != call->use_end()) {
+          errs() << "Cannot handle usage of non matching return types for " << *call->getType() << " and " << *newCall->getType() << "\n";
+        }
+
+        newCall->insertBefore(call);
+        call->replaceAllUsesWith(newCall);
+        call->eraseFromParent();
+    
+      } else {
+        ReplaceInstWithInst(call, newCall);
+      }
+    }
+  }
+}
+  
 struct LowerJuliaArrayPass : public ModulePass {
 
   static char ID;
@@ -41,20 +72,22 @@ struct LowerJuliaArrayPass : public ModulePass {
   virtual bool runOnModule(Module &M) {
     
     std::vector<Function*> Fs = functions(M);
-    
-    linkLibrary(M);
 
+    linkLibrary(M);
+    
     for (std::vector<Function*>::iterator I = Fs.begin(), E = Fs.end(); I != E; ++I) {
 
       Function *OldFunc = (*I);
-
+      StringRef name = OldFunc->getName();
       Function *NewFunc = copyFunctionWithLoweredJuliaArrayArguments(M, OldFunc);
-      //OldFunc->replaceAllUsesWith(NewFunc);
+      replaceAllCallsWith(OldFunc, NewFunc);
+
       OldFunc->eraseFromParent();
+      NewFunc->setName(name);
       
-      //if (!NewFunc->isDeclaration()) {
+      if (NewFunc->hasFnAttribute("kernel")) {
         generateFunctionMetadata(M, NewFunc);
-      //}
+      }
     }
     
     return false;
@@ -66,8 +99,9 @@ struct LowerJuliaArrayPass : public ModulePass {
     for (Module::iterator F = M.begin(); F != M.end(); ++F) {
 
       if (!F->isDeclaration()) {
-        functions.push_back(F);
+        F->addFnAttr("kernel");
       }
+      functions.push_back(F);
     }
     
     return functions;
@@ -75,21 +109,9 @@ struct LowerJuliaArrayPass : public ModulePass {
 
   void generateFunctionMetadata(Module &M, Function *F) {
 
-    //generateOpenCLKernelMetadata(M, F);
     generateNVVMKernelMetadata(M, F);
     
     
-  }
-
-  void generateOpenCLKernelMetadata(Module &M, Function *F) {
-
-    SmallVector <llvm::Value*, 5> kernelMDArgs;
-    kernelMDArgs.push_back(F);
-
-    MDNode *kernelMDNode = MDNode::get(M.getContext(), kernelMDArgs);
-    
-    NamedMDNode* OpenCLKernels = M.getOrInsertNamedMetadata("opencl.kernels");
-    OpenCLKernels->addOperand(kernelMDNode);
   }
 
   void generateNVVMKernelMetadata(Module &M, Function *F) {
@@ -125,14 +147,14 @@ struct LowerJuliaArrayPass : public ModulePass {
     std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(OldFunc);
 
     FunctionType *functionType = buildLoweredFunctionType(OldFunc, ArgTypes);
-
+    
     Function* NewFunc = Function::Create(
       functionType,
       OldFunc->getLinkage(),
       OldFunc->getName(),
       &M
     );
-
+    
     ValueToValueMapTy VMap;
 
     Function::arg_iterator DestI = NewFunc->arg_begin();
@@ -140,9 +162,8 @@ struct LowerJuliaArrayPass : public ModulePass {
       VMap[I] = DestI++;
     }
 
-
     SmallVector<ReturnInst*, 5> Returns;
-    
+        
     CloneFunctionInto(NewFunc, OldFunc, VMap, false, Returns, "", 0);
 
     return NewFunc;
@@ -171,7 +192,7 @@ struct LowerJuliaArrayPass : public ModulePass {
 
   FunctionType* buildLoweredFunctionType(Function *F, std::vector<Type*> ArgTypes) {
     return FunctionType::get(
-      Type::getVoidTy(F->getContext()),
+      F->getReturnType(),
       ArgTypes,
       F->getFunctionType()->isVarArg()
     );
