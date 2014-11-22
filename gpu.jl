@@ -15,7 +15,9 @@ function void() end
 @inline get_global_id(id::Int64) = get_global_id(int32(id))
 @noinline get_global_id(id::Int32) = int64(id)
 
-type GPUArray{T}
+
+
+type GPUArray{T <: Union(Int32, Int64, Float32, Float64)}
   data::Array{T,1}
 end
 
@@ -28,31 +30,16 @@ llvm_type(::Type{Float32}) = "float"
 llvm_type(::Type{Float64}) = "double"
 llvm_type{T}(::Type{GPUArray{T}}) = llvm_type(T) * "*"
 
-function code_ptx(code)
+function code_lowered_array(fn, args)
 
-  run(`mkdir -p .ptx`)
-  f = open(".ptx/kernel.ll", "w")
-  write(f, code)
-  close(f)
+  code = code_module(fn, args)
 
-  #run(`llvm-as .ptx/kernel.ll`)
-  #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
-
-  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
-
-  # Hack to remove .weak declaration from get_global_id
-  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
-
-  return ptx
-
-end
-
-function code_spir(code)
   run(`mkdir -p .spir`)
   f = open(".spir/kernel.ll", "w")
   write(f, code)
   close(f)
   readall(`$base$julia2ptx .spir/kernel.ll` .> `cat`)
+
 end
 
 function code_module(fn, args)
@@ -72,7 +59,22 @@ function code_module(fn, args)
 end
 
 function code_ptx(fn, args)
-  code_ptx(code_spir(code_module(fn, args)))
+  code = code_lowered_array(fn, args)
+
+  run(`mkdir -p .ptx`)
+  f = open(".ptx/kernel.ll", "w")
+  write(f, code)
+  close(f)
+
+  #run(`llvm-as .ptx/kernel.ll`)
+  #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
+
+  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
+
+  # Hack to remove .weak declaration from get_global_id
+  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
+
+  return ptx
 end
 
 function makeModule(fn, args)
