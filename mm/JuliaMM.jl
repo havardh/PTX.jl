@@ -4,13 +4,12 @@ using BenchmarkLite
 
 include("../gpu.jl")
 
-function MatrixMultiply(A, B, C, n, m, k)
+function MatrixMultiply(A, B, C, n, m, k, v)
 
   col = get_global_id(0);
   row = get_global_id(1);
 
   i = 0;
-  v = 0;
   while i < m
 
     v = v + (A[i + row*m] * B[col + i*k]);
@@ -22,47 +21,47 @@ function MatrixMultiply(A, B, C, n, m, k)
   return
 end
 
-type Benchmark <: Proc end
+type Benchmark{T} <: Proc end
 
-Base.string(::Benchmark) = "Julia GPU"
-Base.length(p::Benchmark, n) = n
-Base.isvalid(p::Benchmark, n) = n > 0
+Base.string{T}(::Benchmark{T}) = "Julia GPU(" * string(T) * ")"
+Base.length{T}(p::Benchmark{T}, n) = n
+Base.isvalid{T}(p::Benchmark{T}, n) = n > 0
 
-function Base.start(p::Benchmark, n)
+function Base.start{T}(p::Benchmark{T}, n)
   dev, ctx = create()
   ptx = code_ptx(MatrixMultiply, 
-    (GPUArray{Int64},
-    GPUArray{Int64},
-    GPUArray{Int64},
-    Int64, Int64, Int64)
+    (GPUArray{T},
+    GPUArray{T},
+    GPUArray{T},
+    Int64, Int64, Int64, T)
   )
 
   md = CUDA.CuModule(source=ptx)
   mm = CUDA.CuFunction(md, "MatrixMultiply")
 
-  A = GPUArray{Int64}(rand(Int64, n*n));
-  B = GPUArray{Int64}(rand(Int64, n*n));
+  A = GPUArray{T}(rand(T, n*n));
+  B = GPUArray{T}(rand(T, n*n));
   
   A_gpu = CUDA.CuArray(A.data)
   B_gpu = CUDA.CuArray(B.data)
-  C_gpu = CUDA.CuArray(Int64, n*n)
+  C_gpu = CUDA.CuArray(T, n*n)
 
   (ctx, mm, (A_gpu, B_gpu, C_gpu))
 
 end
 
-function Base.run(p::Benchmark, n, state)
+function Base.run{T}(p::Benchmark{T}, n, state)
 
   (ctx, mm, (A_gpu, B_gpu, C_gpu)) = state
 
   gs = n > 32 ? div(n, 32) : 1
   bs = n > 32 ? 32 : n
 
-  CUDA.launch(mm, (gs, gs), (bs, bs), (A_gpu, B_gpu, C_gpu, n, n, n))
+  CUDA.launch(mm, (gs, gs), (bs, bs), (A_gpu, B_gpu, C_gpu, n, n, n, zero(T)))
 
 end
 
-function Base.done(p::Benchmark, n, state)
+function Base.done{T}(p::Benchmark{T}, n, state)
 
   (ctx, mm, (A_gpu, B_gpu, C_gpu)) = state
 

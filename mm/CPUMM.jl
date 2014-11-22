@@ -2,22 +2,22 @@ module CPUMM
 
 using BenchmarkLite
 
-type Benchmark <: Proc end
+type Benchmark{T} <: Proc end
 
-Base.string(::Benchmark) = "Julia CPU"
-Base.length(p::Benchmark, n) = n
-Base.isvalid(p::Benchmark, n) = n > 0
+Base.string{T}(::Benchmark{T}) = "Julia CPU(" * string(T) * ")"
+Base.length{T}(p::Benchmark{T}, n) = n
+Base.isvalid{T}(p::Benchmark{T}, n) = n > 0
 
-function Base.start(p::Benchmark, n)
+function Base.start{T}(p::Benchmark{T}, n)
 
-  A = rand(Int64, n, n);
-  B = rand(Int64, n, n);
+  A = rand(T, n, n);
+  B = rand(T, n, n);
   
   (A, B)
 
 end
 
-function Base.run(p::Benchmark, n, state)
+function Base.run{T}(p::Benchmark{T}, n, state)
 
   (A, B) = state
 
@@ -25,7 +25,7 @@ function Base.run(p::Benchmark, n, state)
 
 end
 
-Base.done(p::Benchmark, n, state) = nothing
+Base.done{T}(p::Benchmark{T}, n, state) = nothing
 
 export Benchmark
 

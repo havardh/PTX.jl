@@ -5,11 +5,17 @@ import JuliaMM
 import CPUMM
 
 procs = Proc[
-  JuliaMM.Benchmark(),
-  CPUMM.Benchmark()
+  JuliaMM.Benchmark{Int32}(),
+  JuliaMM.Benchmark{Float32}(),
+  JuliaMM.Benchmark{Int64}(),
+  JuliaMM.Benchmark{Float64}(),
+  CPUMM.Benchmark{Int32}(),
+  CPUMM.Benchmark{Float32}(),
+  CPUMM.Benchmark{Int64}(),
+  CPUMM.Benchmark{Float64}()
 ];
 
-cfgs = 2 .^ [1:2]
+cfgs = 2 .^ [1:8]
 
 rtable = run(procs, cfgs);
 println(typeof(rtable))
