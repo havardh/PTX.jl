@@ -15,37 +15,31 @@ function void() end
 @inline get_global_id(id::Int64) = get_global_id(int32(id))
 @noinline get_global_id(id::Int32) = int64(id)
 
-type GPUArray{T}
+
+
+type GPUArray{T <: Union(Int32, Int64, Float32, Float64)}
   data::Array{T,1}
 end
 
-@noinline getindex{T}(A::GPUArray{T}, i::Int64) = 0
-@noinline setindex!{T}(A::GPUArray{T}, x, i) = A[i] = x
+@noinline getindex{T}(A::GPUArray{T}, i::Int64) = A.data[i]
+@noinline setindex!{T}(A::GPUArray{T}, x::T, i::Int64) = A.data[i] = x
 
-function code_ptx(code)
-  run(`mkdir -p .ptx`)
-  f = open(".ptx/kernel.ll", "w")
-  write(f, code)
-  close(f)
+llvm_type(::Type{Int32}) = "i32"
+llvm_type(::Type{Int64}) = "i64"
+llvm_type(::Type{Float32}) = "float"
+llvm_type(::Type{Float64}) = "double"
+llvm_type{T}(::Type{GPUArray{T}}) = llvm_type(T) * "*"
 
-  #run(`llvm-as .ptx/kernel.ll`)
-  #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
+function code_lowered_array(fn, args)
 
-  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
+  code = code_module(fn, args)
 
-  # Hack to remove .weak declaration from get_global_id
-  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
-
-  return ptx
-
-end
-
-function code_spir(code)
   run(`mkdir -p .spir`)
   f = open(".spir/kernel.ll", "w")
   write(f, code)
   close(f)
   readall(`$base$julia2ptx .spir/kernel.ll` .> `cat`)
+
 end
 
 function code_module(fn, args)
@@ -60,24 +54,38 @@ function code_module(fn, args)
   close(outRead)
   redirect_stdout(originalSTDOUT)
 
-  unmangle(makeModule(fn))
+  unmangle(makeModule(fn, args))
 
 end
 
 function code_ptx(fn, args)
-  code_ptx(code_spir(code_module(fn, args)))
+  code = code_lowered_array(fn, args)
+
+  run(`mkdir -p .ptx`)
+  f = open(".ptx/kernel.ll", "w")
+  write(f, code)
+  close(f)
+
+  #run(`llvm-as .ptx/kernel.ll`)
+  #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
+
+  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
+
+  # Hack to remove .weak declaration from get_global_id
+  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
+
+  return ptx
 end
 
-function makeModule(fn)
+function makeModule(fn, args)
 
   jl_value = "%jl_value_t = type { %jl_value_t* }"
 
   declares = makeDeclares(fn)
   fn = stripDebugging(fn)
-
-  "$jl_value
-   $fn
-   $declares"
+  metadata = makeMetadata(args)
+ 
+  "$jl_value\n$fn\n$declares\n\n$metadata"
 end
 
 function makeDeclares(fn)
@@ -96,6 +104,19 @@ function makeDeclares(fn)
   str_descs
 end
 
+function makeMetadata(args)
+
+  metadata = "!julia.args = !{!0}\n\n!0 = metadata !{"
+
+  delim = ""
+  for arg in args
+    metadata = metadata * delim * "metadata !\"" * llvm_type(arg) * "\""
+    delim = ", "
+  end
+
+  metadata * "}"
+
+end
 
 function removeValues(call)
 

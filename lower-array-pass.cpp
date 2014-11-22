@@ -1,3 +1,4 @@
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Pass.h"
 #include "llvm/PassManager.h"
 #include "llvm/IR/Module.h"
@@ -20,7 +21,223 @@
 #include "linker.h"
 
 namespace llvm {
+
+bool is_jl_array_type(Type*);
+void replaceAllCallsWith(Value*, Value*);
+Type* extractType(LLVMContext&, StringRef);
+StringRef mangle(LLVMContext&,StringRef, FunctionType*);
   
+struct LowerJuliaArrayPass : public ModulePass {
+
+  static char ID;
+  LowerJuliaArrayPass() : ModulePass(ID) {}
+
+  virtual bool runOnModule(Module &M) {
+    
+    std::vector<Function*> Fs = functions(M);
+    
+    
+    for (std::vector<Function*>::iterator I = Fs.begin(), E = Fs.end(); I != E; ++I) {
+
+      Function *F = (*I);
+      
+      if (F->isDeclaration()) {
+        replaceWithLoweredDeclaration(M, F);
+      } else {
+        Function* NewFunc = replaceWithLoweredImplementation(M, F);
+        
+        generateNVVMKernelMetadata(M, NewFunc);
+      }
+    }
+
+    linkLibrary(M);
+    
+    return false;
+  }
+
+  void replaceWithLoweredDeclaration(Module& M, Function* F) {
+
+    LLVMContext& context = M.getContext();
+    
+    StringRef name = F->getName();
+    if (!(name.equals("getindex") || name.equals("setindex"))) {
+      return; 
+    }
+    
+    std::vector<Type*> ArgTypes = lowerJuliaArrayArgumentsDecl(F);
+
+    FunctionType *functionType = buildLoweredFunctionType(F, ArgTypes);
+
+    Function* NewFunc = Function::Create(
+      functionType,
+      F->getLinkage(),
+      F->getName(),
+      &M
+    );
+    replaceAllCallsWith(F, NewFunc);
+    F->eraseFromParent();
+    NewFunc->setName(mangle(context, name, functionType));
+    
+  }
+
+  Function* replaceWithLoweredImplementation(Module& M, Function* F) {
+
+    std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(F);
+    Function* NewFunc = copyFunctionWithArguments(M, F, ArgTypes);
+
+    StringRef name = F->getName();
+    replaceAllCallsWith(F, NewFunc);
+    F->eraseFromParent();
+    NewFunc->setName(name);
+
+    return NewFunc;
+  }  
+
+  std::vector<Function*> functions(Module &M) {
+    std::vector<Function*> functions;
+
+    for (Module::iterator F = M.begin(); F != M.end(); ++F) {
+
+      if (!F->isDeclaration()) {
+        F->addFnAttr("kernel");
+      }
+      functions.push_back(F);
+    }
+    
+    return functions;
+  }
+
+  void generateNVVMKernelMetadata(Module &M, Function *F) {
+
+    LLVMContext &Ctx = M.getContext();
+    
+    SmallVector <llvm::Value*, 5> kernelMDArgs;
+    kernelMDArgs.push_back(F);
+    kernelMDArgs.push_back(MDString::get(Ctx, "kernel"));
+    kernelMDArgs.push_back(ConstantInt::get(llvm::Type::getInt32Ty(Ctx), 1));
+
+    MDNode *kernelMDNode = MDNode::get(Ctx, kernelMDArgs);
+
+    NamedMDNode* NvvmAnnotations = M.getOrInsertNamedMetadata("nvvm.annotations");
+    NvvmAnnotations->addOperand(kernelMDNode);
+
+  }
+
+  void linkLibrary(Module &M) {
+    
+    SMDiagnostic error;
+    Module* LowLevelJuliaArray = ParseIRFile("/home/havard/projects/PTX.jl/lowered-julia-array.bc", error, M.getContext());
+    Module* OpenCLPTXLibrary = ParseIRFile("/home/havard/projects/PTX.jl/nvptx64-nvidia-cuda.bc", error, M.getContext());
+
+    link(&M, LowLevelJuliaArray);
+    link(&M, OpenCLPTXLibrary);
+  }
+
+  Function* copyFunctionWithArguments(Module &M, Function *OldFunc, std::vector<Type*> ArgTypes) {
+
+    FunctionType *functionType = buildLoweredFunctionType(OldFunc, ArgTypes);
+
+    Function* NewFunc = Function::Create(
+      functionType,
+      OldFunc->getLinkage(),
+      OldFunc->getName(),
+      &M
+    );
+    
+    ValueToValueMapTy VMap;
+    Function::arg_iterator DestI = NewFunc->arg_begin();
+    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
+      VMap[I] = DestI++;
+    }
+
+    SmallVector<ReturnInst*, 5> Returns;
+
+    CloneFunctionInto(NewFunc, OldFunc, VMap, false, Returns, "", 0);
+    return NewFunc;
+  }
+
+  std::vector<Type*> lowerJuliaArrayArguments(Function *OldFunc) {
+
+    Module* M = OldFunc->getParent();
+    LLVMContext &context = M->getContext();
+    NamedMDNode* JuliaArgs = M->getOrInsertNamedMetadata("julia.args");
+    MDNode *node = JuliaArgs->getOperand(0);
+
+    int operand = 0;
+    std::vector<Type*> ArgTypes;
+    
+    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) { 
+
+      Type* argType = I->getType();
+      if (is_jl_array_type(argType)) {
+        // Should figure out actual type from meta?
+        // This is hardcoded i64*
+
+        Value *value = node->getOperand(operand);
+        if (MDString* mdstring = dyn_cast<MDString>(value)) {
+
+          if (Type* type = extractType(context, mdstring->getString())) {
+            ArgTypes.push_back(type);            
+          } else {
+            errs() << "Could not extract type: ";
+            mdstring->print(errs());
+            errs() << "\n";
+            exit(1);
+          }
+        } else {
+          errs() << "Could not extract type: ";
+          value->print(errs());
+          errs() << "\n";
+          exit(1);
+        }
+        
+        
+      } else {
+        ArgTypes.push_back(I->getType());
+      }
+      operand++;
+    }
+
+    return ArgTypes;
+    
+  }
+
+  std::vector<Type*> lowerJuliaArrayArgumentsDecl(Function* F) {
+    std::vector<Type*> ArgTypes;
+    Type* ReturnType = F->getReturnType();
+    
+    for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E; ++I) {
+
+      Type* argType = I->getType();
+      if (is_jl_array_type(argType)) {
+        ArgTypes.push_back(PointerType::get(ReturnType, 1));
+      } else {
+        ArgTypes.push_back(I->getType());
+      }
+      
+    }
+
+    return ArgTypes;
+  }
+
+  FunctionType* buildLoweredFunctionType(Function *F, std::vector<Type*> ArgTypes) {
+    return FunctionType::get(
+      F->getReturnType(),
+      ArgTypes,
+      F->getFunctionType()->isVarArg()
+    );
+  }
+  
+};
+
+char LowerJuliaArrayPass::ID = 0;
+
+static RegisterPass<LowerJuliaArrayPass> X("LowerJuliaArrayPass", "Lower Julia Array usage to c arrays", false, false);
+
+Pass* createLowerJuliaArrayPass() {
+  return new LowerJuliaArrayPass();
+}
+
 bool is_jl_array_type(Type* type) {
   if (type->isPointerTy()) {
     Type *elemType = type->getPointerElementType();
@@ -35,7 +252,7 @@ bool is_jl_array_type(Type* type) {
 
 
   
-void replaceAllCallsWith(Function* OldFunc, Function* NewFunc) {
+void replaceAllCallsWith(Value* OldFunc, Value* NewFunc) {
   
   for (Value::use_iterator I = OldFunc->use_begin(), E = OldFunc->use_end(); I != E; ++I) {
 
@@ -60,152 +277,59 @@ void replaceAllCallsWith(Function* OldFunc, Function* NewFunc) {
       } else {
         ReplaceInstWithInst(call, newCall);
       }
+    } else {
+      (*I)->print(errs()); errs() << "\n";
+      exit(1);
     }
   }
 }
-  
-struct LowerJuliaArrayPass : public ModulePass {
 
-  static char ID;
-  LowerJuliaArrayPass() : ModulePass(ID) {}
 
-  virtual bool runOnModule(Module &M) {
-    
-    std::vector<Function*> Fs = functions(M);
+Type* extractType(LLVMContext& context, StringRef type) {
 
-    linkLibrary(M);
-    
-    for (std::vector<Function*>::iterator I = Fs.begin(), E = Fs.end(); I != E; ++I) {
+  return PointerType::get(llvm::StringSwitch<llvm::Type*>(type)
+    .Case("i32*", Type::getInt32Ty(context))
+    .Case("i64*", Type::getInt64Ty(context))
+    .Case("float*", Type::getFloatTy(context))
+    .Case("double*", Type::getDoubleTy(context))
+    .Default(NULL), 1);
 
-      Function *OldFunc = (*I);
-      StringRef name = OldFunc->getName();
-      Function *NewFunc = copyFunctionWithLoweredJuliaArrayArguments(M, OldFunc);
-      replaceAllCallsWith(OldFunc, NewFunc);
+}
 
-      OldFunc->eraseFromParent();
-      NewFunc->setName(name);
+StringRef mangle(LLVMContext& context, StringRef name, FunctionType* FT) {
+
+  if (name.equals("getindex") || name.equals("setindex")) {
+
+    char* types = new char[FT->getNumParams()+1];
+    types[FT->getNumParams()] = '\0';
+    for (int i=0; i<FT->getNumParams(); i++) {
+
+      Type* type = FT->getParamType(i);
+
+      if (type->isPointerTy()) {
+        type = FT->getContainedType(0);
+      }
       
-      if (NewFunc->hasFnAttribute("kernel")) {
-        generateFunctionMetadata(M, NewFunc);
-      }
-    }
-    
-    return false;
-  }
-
-  std::vector<Function*> functions(Module &M) {
-    std::vector<Function*> functions;
-
-    for (Module::iterator F = M.begin(); F != M.end(); ++F) {
-
-      if (!F->isDeclaration()) {
-        F->addFnAttr("kernel");
-      }
-      functions.push_back(F);
-    }
-    
-    return functions;
-  }
-
-  void generateFunctionMetadata(Module &M, Function *F) {
-
-    generateNVVMKernelMetadata(M, F);
-    
-    
-  }
-
-  void generateNVVMKernelMetadata(Module &M, Function *F) {
-
-    LLVMContext &Ctx = M.getContext();
-    
-    SmallVector <llvm::Value*, 5> kernelMDArgs;
-    kernelMDArgs.push_back(F);
-    kernelMDArgs.push_back(MDString::get(Ctx, "kernel"));
-    kernelMDArgs.push_back(ConstantInt::get(llvm::Type::getInt32Ty(Ctx), 1));
-
-    MDNode *kernelMDNode = MDNode::get(Ctx, kernelMDArgs);
-
-    NamedMDNode* NvvmAnnotations = M.getOrInsertNamedMetadata("nvvm.annotations");
-    NvvmAnnotations->addOperand(kernelMDNode);
-
-  
-  }
-
-  void linkLibrary(Module &M) {
-    
-    SMDiagnostic error;
-    Module* LowLevelJuliaArray = ParseIRFile("/home/havard/projects/PTX.jl/lowered-julia-array.bc", error, M.getContext());
-    Module* OpenCLPTXLibrary = ParseIRFile("/home/havard/projects/PTX.jl/nvptx64-nvidia-cuda.bc", error, M.getContext());
-
-    link(&M, LowLevelJuliaArray);
-    link(&M, OpenCLPTXLibrary);
-    
-  }
-
-  Function* copyFunctionWithLoweredJuliaArrayArguments(Module &M, Function *OldFunc) {
-
-    std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(OldFunc);
-
-    FunctionType *functionType = buildLoweredFunctionType(OldFunc, ArgTypes);
-    
-    Function* NewFunc = Function::Create(
-      functionType,
-      OldFunc->getLinkage(),
-      OldFunc->getName(),
-      &M
-    );
-    
-    ValueToValueMapTy VMap;
-
-    Function::arg_iterator DestI = NewFunc->arg_begin();
-    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
-      VMap[I] = DestI++;
-    }
-
-    SmallVector<ReturnInst*, 5> Returns;
-        
-    CloneFunctionInto(NewFunc, OldFunc, VMap, false, Returns, "", 0);
-
-    return NewFunc;
-  }
-
-  std::vector<Type*> lowerJuliaArrayArguments(Function *OldFunc) {
-
-    std::vector<Type*> ArgTypes;
-    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
-
-      Type* argType = I->getType();
-
-      if (is_jl_array_type(argType)) {
-        // Should figure out actual type from meta?
-        // This is hardcoded i64*
-        ArgTypes.push_back(PointerType::get(IntegerType::get(OldFunc->getContext(), 64), 1));
+      if (type == Type::getInt32Ty(context)) {
+        types[i] = 'i';
+      } else if (type == Type::getInt64Ty(context)) {
+        types[i] = 'l';
+      } else if (type == Type::getFloatTy(context)) {
+        types[i] = 'f';
+      } else if (type == Type::getDoubleTy(context)) {
+        types[i] = 'd';
       } else {
-        ArgTypes.push_back(I->getType());
+        errs() << "Unknown type: "; FT->getParamType(i)->print(errs()); errs() << "\n";
+        exit(1);
       }
       
     }
 
-    return ArgTypes;
+    return Twine("_Z8").concat(name).concat("PU3AS1").concat(types).str();
     
+  } else {
+    return name;
   }
-
-  FunctionType* buildLoweredFunctionType(Function *F, std::vector<Type*> ArgTypes) {
-    return FunctionType::get(
-      F->getReturnType(),
-      ArgTypes,
-      F->getFunctionType()->isVarArg()
-    );
-  }
-  
-};
-
-char LowerJuliaArrayPass::ID = 0;
-
-static RegisterPass<LowerJuliaArrayPass> X("LowerJuliaArrayPass", "Lower Julia Array usage to c arrays", false, false);
-
-Pass* createLowerJuliaArrayPass() {
-  return new LowerJuliaArrayPass();
 }
-
+  
 }
