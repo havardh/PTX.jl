@@ -1,3 +1,4 @@
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Pass.h"
 #include "llvm/PassManager.h"
 #include "llvm/IR/Module.h"
@@ -20,77 +21,11 @@
 #include "linker.h"
 
 namespace llvm {
-  
-bool is_jl_array_type(Type* type) {
-  if (type->isPointerTy()) {
-    Type *elemType = type->getPointerElementType();
-    if (elemType->isStructTy()) {
-      if (elemType->getStructName() == StringRef("jl_value_t")) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
-
-  
-void replaceAllCallsWith(Function* OldFunc, Function* NewFunc) {
-  
-  for (Value::use_iterator I = OldFunc->use_begin(), E = OldFunc->use_end(); I != E; ++I) {
-
-    if (CallInst* call = dyn_cast<CallInst>(*I)) {
-    
-      std::vector<Value*> args;
-      for(int i=0; i<call->getNumArgOperands(); i++) {
-        args.push_back(call->getArgOperand(i));
-      }
-      ArrayRef<Value*> Args(args);
-  
-      CallInst *newCall = CallInst::Create(NewFunc, Args);
-      if (newCall->getType() != call->getType()) {
-        if (call->use_begin() != call->use_end()) {
-          errs() << "Cannot handle usage of non matching return types for " << *call->getType() << " and " << *newCall->getType() << "\n";
-        }
-
-        newCall->insertBefore(call);
-        call->replaceAllUsesWith(newCall);
-        call->eraseFromParent();
-    
-      } else {
-        ReplaceInstWithInst(call, newCall);
-      }
-    }
-  }
-}
-
-Type* extractType(LLVMContext& context, StringRef type) {
-  APInt Val;
-  errs() << type.substr(1,2) << "\n";
-  errs() << type.substr(1,2).getAsInteger(10, Val) << "\n";
-  if (!type.substr(1,2).getAsInteger(10, Val)) {
-
-    uint64_t bits = Val.getLimitedValue();
-    switch (type[0]) {
-    case 'i': {
-      return PointerType::get(IntegerType::get(context, bits), 1);
-    }
-    case 'f': {
-      if (bits == 32) {
-        return PointerType::get(Type::getFloatTy(context), 1);
-      } else {
-        return PointerType::get(Type::getDoubleTy(context), 1);
-      }
-    }
-    default:
-      errs() << "Not supported\n";
-      exit(1);
-    }
-    
-  }
-
-  return NULL;
-}
+bool is_jl_array_type(Type*);
+void replaceAllCallsWith(Value*, Value*);
+Type* extractType(LLVMContext&, StringRef);
+StringRef mangle(LLVMContext&,StringRef, FunctionType*);
   
 struct LowerJuliaArrayPass : public ModulePass {
 
@@ -100,26 +35,63 @@ struct LowerJuliaArrayPass : public ModulePass {
   virtual bool runOnModule(Module &M) {
     
     std::vector<Function*> Fs = functions(M);
-
-    linkLibrary(M);
+    
     
     for (std::vector<Function*>::iterator I = Fs.begin(), E = Fs.end(); I != E; ++I) {
 
-      Function *OldFunc = (*I);
-      StringRef name = OldFunc->getName();
-      Function *NewFunc = copyFunctionWithLoweredJuliaArrayArguments(M, OldFunc);
-      replaceAllCallsWith(OldFunc, NewFunc);
-
-      OldFunc->eraseFromParent();
-      NewFunc->setName(name);
+      Function *F = (*I);
       
-      if (NewFunc->hasFnAttribute("kernel")) {
-        generateFunctionMetadata(M, NewFunc);
+      if (F->isDeclaration()) {
+        replaceWithLoweredDeclaration(M, F);
+      } else {
+        Function* NewFunc = replaceWithLoweredImplementation(M, F);
+        
+        generateNVVMKernelMetadata(M, NewFunc);
       }
     }
+
+    linkLibrary(M);
     
     return false;
   }
+
+  void replaceWithLoweredDeclaration(Module& M, Function* F) {
+
+    LLVMContext& context = M.getContext();
+    
+    StringRef name = F->getName();
+    if (!(name.equals("getindex") || name.equals("setindex"))) {
+      return; 
+    }
+    
+    std::vector<Type*> ArgTypes = lowerJuliaArrayArgumentsDecl(F);
+
+    FunctionType *functionType = buildLoweredFunctionType(F, ArgTypes);
+
+    Function* NewFunc = Function::Create(
+      functionType,
+      F->getLinkage(),
+      F->getName(),
+      &M
+    );
+    replaceAllCallsWith(F, NewFunc);
+    F->eraseFromParent();
+    NewFunc->setName(mangle(context, name, functionType));
+    
+  }
+
+  Function* replaceWithLoweredImplementation(Module& M, Function* F) {
+
+    std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(F);
+    Function* NewFunc = copyFunctionWithArguments(M, F, ArgTypes);
+
+    StringRef name = F->getName();
+    replaceAllCallsWith(F, NewFunc);
+    F->eraseFromParent();
+    NewFunc->setName(name);
+
+    return NewFunc;
+  }  
 
   std::vector<Function*> functions(Module &M) {
     std::vector<Function*> functions;
@@ -133,13 +105,6 @@ struct LowerJuliaArrayPass : public ModulePass {
     }
     
     return functions;
-  }
-
-  void generateFunctionMetadata(Module &M, Function *F) {
-
-    generateNVVMKernelMetadata(M, F);
-    
-    
   }
 
   void generateNVVMKernelMetadata(Module &M, Function *F) {
@@ -156,7 +121,6 @@ struct LowerJuliaArrayPass : public ModulePass {
     NamedMDNode* NvvmAnnotations = M.getOrInsertNamedMetadata("nvvm.annotations");
     NvvmAnnotations->addOperand(kernelMDNode);
 
-  
   }
 
   void linkLibrary(Module &M) {
@@ -167,15 +131,12 @@ struct LowerJuliaArrayPass : public ModulePass {
 
     link(&M, LowLevelJuliaArray);
     link(&M, OpenCLPTXLibrary);
-    
   }
 
-  Function* copyFunctionWithLoweredJuliaArrayArguments(Module &M, Function *OldFunc) {
-
-    std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(OldFunc);
+  Function* copyFunctionWithArguments(Module &M, Function *OldFunc, std::vector<Type*> ArgTypes) {
 
     FunctionType *functionType = buildLoweredFunctionType(OldFunc, ArgTypes);
-    
+
     Function* NewFunc = Function::Create(
       functionType,
       OldFunc->getLinkage(),
@@ -184,16 +145,14 @@ struct LowerJuliaArrayPass : public ModulePass {
     );
     
     ValueToValueMapTy VMap;
-
     Function::arg_iterator DestI = NewFunc->arg_begin();
     for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
       VMap[I] = DestI++;
     }
 
     SmallVector<ReturnInst*, 5> Returns;
-        
-    CloneFunctionInto(NewFunc, OldFunc, VMap, false, Returns, "", 0);
 
+    CloneFunctionInto(NewFunc, OldFunc, VMap, false, Returns, "", 0);
     return NewFunc;
   }
 
@@ -203,13 +162,13 @@ struct LowerJuliaArrayPass : public ModulePass {
     LLVMContext &context = M->getContext();
     NamedMDNode* JuliaArgs = M->getOrInsertNamedMetadata("julia.args");
     MDNode *node = JuliaArgs->getOperand(0);
-    
+
     int operand = 0;
     std::vector<Type*> ArgTypes;
-    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) {
+    
+    for (Function::const_arg_iterator I = OldFunc->arg_begin(), E = OldFunc->arg_end(); I != E; ++I) { 
 
       Type* argType = I->getType();
-
       if (is_jl_array_type(argType)) {
         // Should figure out actual type from meta?
         // This is hardcoded i64*
@@ -243,6 +202,24 @@ struct LowerJuliaArrayPass : public ModulePass {
     
   }
 
+  std::vector<Type*> lowerJuliaArrayArgumentsDecl(Function* F) {
+    std::vector<Type*> ArgTypes;
+    Type* ReturnType = F->getReturnType();
+    
+    for (Function::arg_iterator I = F->arg_begin(), E = F->arg_end(); I != E; ++I) {
+
+      Type* argType = I->getType();
+      if (is_jl_array_type(argType)) {
+        ArgTypes.push_back(PointerType::get(ReturnType, 1));
+      } else {
+        ArgTypes.push_back(I->getType());
+      }
+      
+    }
+
+    return ArgTypes;
+  }
+
   FunctionType* buildLoweredFunctionType(Function *F, std::vector<Type*> ArgTypes) {
     return FunctionType::get(
       F->getReturnType(),
@@ -261,4 +238,98 @@ Pass* createLowerJuliaArrayPass() {
   return new LowerJuliaArrayPass();
 }
 
+bool is_jl_array_type(Type* type) {
+  if (type->isPointerTy()) {
+    Type *elemType = type->getPointerElementType();
+    if (elemType->isStructTy()) {
+      if (elemType->getStructName() == StringRef("jl_value_t")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+
+  
+void replaceAllCallsWith(Value* OldFunc, Value* NewFunc) {
+  
+  for (Value::use_iterator I = OldFunc->use_begin(), E = OldFunc->use_end(); I != E; ++I) {
+
+    if (CallInst* call = dyn_cast<CallInst>(*I)) {
+    
+      std::vector<Value*> args;
+      for(int i=0; i<call->getNumArgOperands(); i++) {
+        args.push_back(call->getArgOperand(i));
+      }
+      ArrayRef<Value*> Args(args);
+  
+      CallInst *newCall = CallInst::Create(NewFunc, Args);
+      if (newCall->getType() != call->getType()) {
+        if (call->use_begin() != call->use_end()) {
+          errs() << "Cannot handle usage of non matching return types for " << *call->getType() << " and " << *newCall->getType() << "\n";
+        }
+
+        newCall->insertBefore(call);
+        call->replaceAllUsesWith(newCall);
+        call->eraseFromParent();
+    
+      } else {
+        ReplaceInstWithInst(call, newCall);
+      }
+    } else {
+      (*I)->print(errs()); errs() << "\n";
+      exit(1);
+    }
+  }
+}
+
+
+Type* extractType(LLVMContext& context, StringRef type) {
+
+  return PointerType::get(llvm::StringSwitch<llvm::Type*>(type)
+    .Case("i32*", Type::getInt32Ty(context))
+    .Case("i64*", Type::getInt64Ty(context))
+    .Case("float*", Type::getFloatTy(context))
+    .Case("double*", Type::getDoubleTy(context))
+    .Default(NULL), 1);
+
+}
+
+StringRef mangle(LLVMContext& context, StringRef name, FunctionType* FT) {
+
+  if (name.equals("getindex") || name.equals("setindex")) {
+
+    char* types = new char[FT->getNumParams()+1];
+    types[FT->getNumParams()] = '\0';
+    for (int i=0; i<FT->getNumParams(); i++) {
+
+      Type* type = FT->getParamType(i);
+
+      if (type->isPointerTy()) {
+        type = FT->getContainedType(0);
+      }
+      
+      if (type == Type::getInt32Ty(context)) {
+        types[i] = 'i';
+      } else if (type == Type::getInt64Ty(context)) {
+        types[i] = 'l';
+      } else if (type == Type::getFloatTy(context)) {
+        types[i] = 'f';
+      } else if (type == Type::getDoubleTy(context)) {
+        types[i] = 'd';
+      } else {
+        errs() << "Unknown type: "; FT->getParamType(i)->print(errs()); errs() << "\n";
+        exit(1);
+      }
+      
+    }
+
+    return Twine("_Z8").concat(name).concat("PU3AS1").concat(types).str();
+    
+  } else {
+    return name;
+  }
+}
+  
 }
