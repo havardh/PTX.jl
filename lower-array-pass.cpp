@@ -44,9 +44,7 @@ struct LowerJuliaArrayPass : public ModulePass {
       if (F->isDeclaration()) {
         replaceWithLoweredDeclaration(M, F);
       } else {
-        Function* NewFunc = replaceWithLoweredImplementation(M, F);
-        
-        generateNVVMKernelMetadata(M, NewFunc);
+        replaceWithLoweredImplementation(M, F);
       }
     }
 
@@ -80,7 +78,7 @@ struct LowerJuliaArrayPass : public ModulePass {
     
   }
 
-  Function* replaceWithLoweredImplementation(Module& M, Function* F) {
+  void replaceWithLoweredImplementation(Module& M, Function* F) {
 
     std::vector<Type*> ArgTypes = lowerJuliaArrayArguments(F);
     Function* NewFunc = copyFunctionWithArguments(M, F, ArgTypes);
@@ -89,8 +87,6 @@ struct LowerJuliaArrayPass : public ModulePass {
     replaceAllCallsWith(F, NewFunc);
     F->eraseFromParent();
     NewFunc->setName(name);
-
-    return NewFunc;
   }  
 
   std::vector<Function*> functions(Module &M) {
@@ -105,22 +101,6 @@ struct LowerJuliaArrayPass : public ModulePass {
     }
     
     return functions;
-  }
-
-  void generateNVVMKernelMetadata(Module &M, Function *F) {
-
-    LLVMContext &Ctx = M.getContext();
-    
-    SmallVector <llvm::Value*, 5> kernelMDArgs;
-    kernelMDArgs.push_back(F);
-    kernelMDArgs.push_back(MDString::get(Ctx, "kernel"));
-    kernelMDArgs.push_back(ConstantInt::get(llvm::Type::getInt32Ty(Ctx), 1));
-
-    MDNode *kernelMDNode = MDNode::get(Ctx, kernelMDArgs);
-
-    NamedMDNode* NvvmAnnotations = M.getOrInsertNamedMetadata("nvvm.annotations");
-    NvvmAnnotations->addOperand(kernelMDNode);
-
   }
 
   void linkLibrary(Module &M) {
