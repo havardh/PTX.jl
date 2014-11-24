@@ -1,0 +1,3 @@
+[submodule "lib/libclc"]
+	path = lib/libclc
+	url = http://llvm.org/git/libclc.git
