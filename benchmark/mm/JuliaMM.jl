@@ -3,7 +3,6 @@ module JuliaMM
 using BenchmarkLite
 
 import CUDA
-push!(LOAD_PATH, "../../src")
 using PTX
 
 function MatrixMultiply(A, B, C, n, m, k, v)
@@ -30,7 +29,10 @@ Base.length{T}(p::Benchmark{T}, n) = n
 Base.isvalid{T}(p::Benchmark{T}, n) = n > 0
 
 function Base.start{T}(p::Benchmark{T}, n)
-  dev, ctx = create()
+
+  dev = CUDA.CuDevice(0)
+  ctx = CUDA.create_context(dev)
+
   ptx = code_ptx(MatrixMultiply, 
     (GPUArray{T},
     GPUArray{T},

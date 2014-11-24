@@ -41,7 +41,9 @@ Base.length(p::Benchmark, n) = n
 Base.isvalid(p::Benchmark, n) = n & (n-1) == 0
 function Base.start(p::Benchmark, n)
 
-  dev, ctx = create()
+  dev, ctx = create()  dev = CUDA.CuDevice(0)
+  ctx = CUDA.create_context(dev)
+
   ptx = code_ptx(blur, (GPUArray{Int64}, GPUArray{Int64}))
   
   md = CUDA.CuModule(source=ptx)
