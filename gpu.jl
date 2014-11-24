@@ -35,10 +35,10 @@ function code_ptx(fn, args)
   code = code_module(fn, args)
 
   run(`mkdir -p .spir`)
-  f = open(".spir/kernel.ll", "w")
+  f = open(".kernel.ll", "w")
   write(f, code)
   close(f)
-  readall(`$base$julia2ptx -O3 -mcpu=sm_20 .spir/kernel.ll -o -`)
+  readall(`$base$julia2ptx -O3 -mcpu=sm_20 .kernel.ll -o -`)
 
 end
 
