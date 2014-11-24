@@ -30,7 +30,7 @@ llvm_type(::Type{Float32}) = "float"
 llvm_type(::Type{Float64}) = "double"
 llvm_type{T}(::Type{GPUArray{T}}) = llvm_type(T) * "*"
 
-function code_lowered_array(fn, args)
+function code_ptx(fn, args)
 
   code = code_module(fn, args)
 
@@ -38,7 +38,7 @@ function code_lowered_array(fn, args)
   f = open(".spir/kernel.ll", "w")
   write(f, code)
   close(f)
-  readall(`$base$julia2ptx .spir/kernel.ll` .> `cat`)
+  readall(`$base$julia2ptx -O3 -mcpu=sm_20 .spir/kernel.ll -o -`)
 
 end
 
@@ -58,34 +58,19 @@ function code_module(fn, args)
 
 end
 
-function code_ptx(fn, args)
-  code = code_lowered_array(fn, args)
-
-  run(`mkdir -p .ptx`)
-  f = open(".ptx/kernel.ll", "w")
-  write(f, code)
-  close(f)
-
-  #run(`llvm-as .ptx/kernel.ll`)
-  #run(`llvm-link .ptx/code.bc -o .ptx/kernel.bc`)
-
-  ptx = readall(`llc -O3 -mcpu=sm_20 .ptx/kernel.ll -o -`)
-
-  # Hack to remove .weak declaration from get_global_id
-  #ptx = readall(`cat .ptx/kernel.ptx` |> `grep -v .weak`)
-
-  return ptx
-end
-
 function makeModule(fn, args)
 
+  target = """
+target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-v128:128:128-v192:256:256-v256:256:256-v512:512:512-v1024:1024:1024"
+target triple = "nvptx64-nvidia-cuda"
+"""
   jl_value = "%jl_value_t = type { %jl_value_t* }"
 
   declares = makeDeclares(fn)
   fn = stripDebugging(fn)
   metadata = makeMetadata(args)
  
-  "$jl_value\n$fn\n$declares\n\n$metadata"
+  "$target\n$jl_value\n$fn\n$declares\n\n$metadata"
 end
 
 function makeDeclares(fn)

@@ -7,11 +7,11 @@ FLAGS=-g
 
 all: julia2ptx
 
-julia2ptx: main.o linker.o lower-array-pass.o annotate-kernels-pass.o
-	clang++ ${FLAGS} -rdynamic main.o linker.o lower-array-pass.o annotate-kernels-pass.o `llvm-config --cxxflags --libs all` `llvm-config --ldflags` -o julia2ptx
+julia2ptx: llc.o linker.o lower-array-pass.o annotate-kernels-pass.o
+	clang++ ${FLAGS} -rdynamic llc.o linker.o lower-array-pass.o annotate-kernels-pass.o `llvm-config --cxxflags --libs all` `llvm-config --ldflags` -o julia2ptx
 
-main.o : main.cpp
-	clang++ ${FLAGS} -c main.cpp ${LLVM_CONFIG}
+llc.o : llc.cpp
+	clang++ ${FLAGS} -c llc.cpp ${LLVM_CONFIG}
 
 linker.o: linker.cpp
 	clang++ ${FLAGS} -c linker.cpp ${LLVM_CONFIG}
