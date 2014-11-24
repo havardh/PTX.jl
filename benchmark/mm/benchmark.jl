@@ -3,19 +3,30 @@ using Winston
 
 import JuliaMM
 import CPUMM
+import CudaMM
 
-procs = Proc[
-  JuliaMM.Benchmark{Int32}(),
-  JuliaMM.Benchmark{Float32}(),
-  JuliaMM.Benchmark{Int64}(),
-  JuliaMM.Benchmark{Float64}(),
-  CPUMM.Benchmark{Int32}(),
-  CPUMM.Benchmark{Float32}(),
-  CPUMM.Benchmark{Int64}(),
-  CPUMM.Benchmark{Float64}()
+Benchmarks = [
+  CudaMM,
+  JuliaMM,
+  CPUMM
+  
 ];
 
-cfgs = 2 .^ [1:8]
+Types = [
+  Int32, Float32, Int64, Float64
+];
+
+function construct(benchmarks, types)
+
+  vcat(map(function(b)
+    map(function(t)
+      b.Benchmark{t}()
+    end, types)
+  end, benchmarks)...)
+
+end
+
+procs = construct(Benchmarks, Types)
 
 rtable = run(procs, cfgs);
 println(typeof(rtable))
