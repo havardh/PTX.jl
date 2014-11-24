@@ -150,9 +150,8 @@ struct LowerJuliaArrayPass : public ModulePass {
 
       Type* argType = I->getType();
       if (is_jl_array_type(argType)) {
-        // Should figure out actual type from meta?
-        // This is hardcoded i64*
-
+        
+        // Gets the type from custom metadata
         Value *value = node->getOperand(operand);
         if (MDString* mdstring = dyn_cast<MDString>(value)) {
 
