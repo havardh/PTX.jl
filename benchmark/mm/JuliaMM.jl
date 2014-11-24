@@ -2,7 +2,9 @@ module JuliaMM
 
 using BenchmarkLite
 
-include("../gpu.jl")
+import CUDA
+push!(LOAD_PATH, "../../src")
+using PTX
 
 function MatrixMultiply(A, B, C, n, m, k, v)
 

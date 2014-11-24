@@ -1,6 +1,11 @@
 module JuliaBlur
 using BenchmarkLite
-include("../gpu.jl")
+
+import CUDA
+push!(LOAD_PATH, "../../src")
+using PTX
+
+
 
 @inline IDX(i,j) = i+j*4
 @inline ON_BORDER(i,j) = (i==0 || j==0 || i==3 || j==3)
