@@ -9,6 +9,7 @@
 
 namespace llvm {
   extern Pass* createEmitJuliaDeclarationsPass();
+  extern Pass* createEmitJuliaExportPass();
 }
 
 using namespace llvm;
@@ -31,6 +32,7 @@ int main(int argc, char **argv) {
 
   PassManager PM;
   PM.add(createEmitJuliaDeclarationsPass());
+  PM.add(createEmitJuliaExportPass());
   PM.run(*module);
 
   return 0;

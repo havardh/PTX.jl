@@ -20,7 +20,9 @@ struct EmitJuliaDeclarationsPass : public ModulePass {
     errs() << "function Void() end\n";
     
     for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
-      emitDeclaration(*I);
+      if (!I->isIntrinsic()) {
+        emitDeclaration(*I);
+      }
     }
     errs() << "\n\nend\n";
     
@@ -81,7 +83,7 @@ struct EmitJuliaDeclarationsPass : public ModulePass {
     } else if (Type == Type::getDoubleTy(Context)) {
       errs() << "Float64";
     } else if (Type->isPointerTy() || Type->isVectorTy() || Type->isStructTy()) {
-      errs() << "Not supported";
+      errs() << "Bool";
     } else {
       errs() << "Could not recognize type: " << *Type << "\n";
       exit(1);
