@@ -3,7 +3,10 @@ module PTX
 base="/home/havard/projects/PTX.jl/julia2ptx/"
 julia2ptx="julia2ptx"
 
+include("noinline.jl")
 include("OpenCL.jl")
+
+
 include("gpu_array.jl")
 include("module.jl")
 
@@ -24,8 +27,6 @@ export
 
   GPUArray,
   getindex,
-  setindex!,
-
-  get_global_id
+  setindex!
 
 end
